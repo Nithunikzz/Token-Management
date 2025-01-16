@@ -8,120 +8,132 @@ import (
 )
 
 type Token struct {
-	ID    string
-	Usage int
+	ID         string
+	UsageCount int
 }
 
-type TokenManager struct {
-	Tokens     []Token
-	Mutex      sync.Mutex
-	ResetTimer *time.Timer
+type TokenPool struct {
+	tokens  []Token
+	mutex   sync.Mutex
+	randGen *rand.Rand
 }
 
-// Initialize TokenManager with 1000 tokens
-func NewTokenManager() *TokenManager {
-	tokens := make([]Token, 1000)
-	for i := 0; i < 1000; i++ {
-		tokens[i] = Token{
-			ID:    fmt.Sprintf("Token %d", i+1),
-			Usage: 0,
+func NewTokenPool(numTokens int) *TokenPool {
+	tokens := make([]Token, numTokens)
+	for i := 0; i < numTokens; i++ {
+		tokens[i] = Token{ID: fmt.Sprintf("Token %d", i+1), UsageCount: 0}
+	}
+	return &TokenPool{
+		tokens:  tokens,
+		randGen: rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
+}
+
+func (tp *TokenPool) SelectLeastUsedToken() *Token {
+	tp.mutex.Lock()
+	defer tp.mutex.Unlock()
+
+	// Find the minimum usage count
+	leastUsage := tp.tokens[0].UsageCount
+	for _, token := range tp.tokens {
+		if token.UsageCount < leastUsage {
+			leastUsage = token.UsageCount
 		}
 	}
 
-	tm := &TokenManager{
-		Tokens: tokens,
-	}
-
-	tm.ResetTimer = time.AfterFunc(24*time.Hour, tm.ResetUsage)
-	return tm
-}
-
-// Select a token with the least usage count
-func (tm *TokenManager) SelectToken() *Token {
-	tm.Mutex.Lock()
-	defer tm.Mutex.Unlock()
-
-	// Find the token(s) with the least usage count
-	minUsage := tm.Tokens[0].Usage
-	indices := []int{0}
-
-	for i, token := range tm.Tokens {
-		if token.Usage < minUsage {
-			minUsage = token.Usage
-			indices = []int{i}
-		} else if token.Usage == minUsage {
-			indices = append(indices, i)
+	// Collect all tokens with the least usage count
+	leastUsedTokens := []*Token{}
+	for i := range tp.tokens {
+		if tp.tokens[i].UsageCount == leastUsage {
+			leastUsedTokens = append(leastUsedTokens, &tp.tokens[i])
 		}
 	}
 
-	// Randomly select one token from the least-used tokens
-	selectedIndex := indices[rand.Intn(len(indices))]
-	tm.Tokens[selectedIndex].Usage++
-
-	// Print the selected token and its usage
-	fmt.Printf("Selected Token: %s, Current Usage: %d\n", tm.Tokens[selectedIndex].ID, tm.Tokens[selectedIndex].Usage)
-	return &tm.Tokens[selectedIndex]
+	randomIndex := tp.randGen.Intn(len(leastUsedTokens))
+	return leastUsedTokens[randomIndex]
 }
 
-// Reset the usage counts of all tokens
-func (tm *TokenManager) ResetUsage() {
-	tm.Mutex.Lock()
-	defer tm.Mutex.Unlock()
-
-	for i := range tm.Tokens {
-		tm.Tokens[i].Usage = 0
-	}
-
-	tm.ResetTimer.Reset(24 * time.Hour)
-
-	fmt.Println("Token usage counts have been reset to zero.")
+func (tp *TokenPool) IncrementUsage(token *Token) {
+	tp.mutex.Lock()
+	defer tp.mutex.Unlock()
+	token.UsageCount++
 }
 
-// Simulate token usage
-func (tm *TokenManager) Simulate(operations int) {
-	for i := 0; i < operations; i++ {
-		tm.SelectToken()
+func (tp *TokenPool) ResetUsage() {
+	tp.mutex.Lock()
+	defer tp.mutex.Unlock()
+	for i := range tp.tokens {
+		tp.tokens[i].UsageCount = 0
 	}
 }
 
-func (tm *TokenManager) DisplayResults() {
-	leastUsage := tm.Tokens[0].Usage
+func (tp *TokenPool) DisplayStats() {
+	tp.mutex.Lock()
+	defer tp.mutex.Unlock()
+
+	leastUsage := tp.tokens[0].UsageCount
 	leastUsedTokens := []Token{}
 
-	for _, token := range tm.Tokens {
-		fmt.Printf("%s: %d uses\n", token.ID, token.Usage)
-		// Track the least used token(s)
-		if token.Usage < leastUsage {
-			leastUsage = token.Usage
-			leastUsedTokens = []Token{token} // Reset the list with the new least-used token
-		} else if token.Usage == leastUsage {
+	fmt.Println("\nToken Usage Stats:")
+	for _, token := range tp.tokens {
+		fmt.Printf("%s: %d uses\n", token.ID, token.UsageCount)
+		if token.UsageCount < leastUsage {
+			leastUsage = token.UsageCount
+			leastUsedTokens = []Token{token}
+		} else if token.UsageCount == leastUsage {
 			leastUsedTokens = append(leastUsedTokens, token)
 		}
 	}
 
-	// Display the least used token(s)
-	fmt.Println("\nLeast Used Token(s):")
+	fmt.Printf("\nLeast Used Token(s):\n")
 	for _, token := range leastUsedTokens {
-		fmt.Printf("%s (%d uses)\n", token.ID, token.Usage)
+		fmt.Printf("%s (%d uses)\n", token.ID, token.UsageCount)
+	}
+}
+
+func simulateUserOperations(tp *TokenPool, userID int, numOperations int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for i := 0; i < numOperations; i++ {
+		token := tp.SelectLeastUsedToken()
+		tp.IncrementUsage(token)
+		fmt.Printf("User %d used %s\n", userID, token.ID)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	var numTokens, numUsers, numOperations int
+	fmt.Print("Enter total number of tokens: ")
+	fmt.Scanln(&numTokens)
 
-	var operations int
-	fmt.Print("Enter simulation time (operations): ")
-	fmt.Scan(&operations)
+	fmt.Print("Enter total number of users: ")
+	fmt.Scanln(&numUsers)
 
-	// Initialize the token manager
-	tm := NewTokenManager()
+	fmt.Print("Enter total number of operations per user: ")
+	fmt.Scanln(&numOperations)
 
-	// Simulate the token usage for the specified number of operations
-	tm.Simulate(operations)
+	// Initialize the token pool
+	tokenPool := NewTokenPool(numTokens)
 
-	// Display the results after the simulation
-	fmt.Printf("\nSimulation Time: %d operations\n\n", operations)
-	tm.DisplayResults()
+	var wg sync.WaitGroup
+	for userID := 1; userID <= numUsers; userID++ {
+		wg.Add(1)
+		go simulateUserOperations(tokenPool, userID, numOperations, &wg)
+	}
 
-	//tm.ResetUsage()
+	// Wait for all users to complete their operations
+	wg.Wait()
+
+	// Simulate a 24-hour reset if needed
+	fmt.Print("Simulate 24-hour reset? (yes/no): ")
+	var resetInput string
+	fmt.Scanln(&resetInput)
+	if resetInput == "yes" {
+		tokenPool.ResetUsage()
+		fmt.Println("All token usages have been reset.")
+	}
+
+	// Output: Display stats
+	fmt.Printf("\nSimulation Complete. Total Operations: %d\n", numUsers*numOperations)
+	tokenPool.DisplayStats()
 }
